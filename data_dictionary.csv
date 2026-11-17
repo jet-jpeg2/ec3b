@@ -1,0 +1,18 @@
+Variable,Type,Range,Description,Role
+track_id,string,track_00001 to track_10000,Unique track identifier,Dropped (identifier)
+track_name,string,Track_00001 to Track_10000,Synthetic track name,Dropped (identifier)
+artist,string,Artist_xxxx (synthetic),Synthetic artist name,Dropped (identifier)
+genre,categorical,10 genres,Primary genre,Predictor (one-hot)
+release_year,integer,2010 to 2025,Year released,Predictor (tested with and without)
+duration_sec,integer,60 to 433 s,Track length,Predictor
+danceability,float,0 to 1,Suitability for dancing,Predictor
+energy,float,0.005 to 1,Intensity and activity,Predictor
+valence,float,0 to 1,Musical positivity,Predictor
+tempo_bpm,float,50 to 177.8 BPM,Beats per minute,Predictor
+acousticness,float,0 to 1,Confidence the track is acoustic,Predictor (log1p)
+instrumentalness,float,0 to 0.934,Likelihood of no vocals,Predictor (log1p)
+speechiness,float,0 to 0.381,Presence of spoken words,Predictor (log1p)
+liveness,float,0 to 0.623,Presence of an audience,Predictor
+loudness_db,float,-18.74 to 0 dB,Overall loudness,Predictor
+streams,integer,134 to 443068342,Total play count,"Excluded (post-outcome, leaks target)"
+viral,binary,0 or 1,"1 if viral, 0 otherwise",Target

@@ -1,168 +1,203 @@
-function out = trainModels(D, options)
-%TRAINMODELS  Fast, lecture-aligned training of 6 models across 5 families
-%             using 'OptimizeHyperparameters' and a shared cvpartition object.
+function [cfg, tunedMdls, HyperparamTable] = trainModels(D, seed)
+% TRAINMODELS Tunes 1 baseline and 5 models across 5 families via Bayesian
+%   optimization with 5-fold CV on the training set, logs final tuned
+%   hyperparameters, saves trained models to models/, and returns cfg for
+%   evalModels.m.
 
-arguments
-    D = []
-    options.Seed (1,1) double = 42
-    options.MaxEvals (1,1) double {mustBeInteger, mustBePositive} = 10
-    options.ModelsDir (1,1) string = "models"
-    options.ResultsDir (1,1) string = "results"
-    options.IncludeGenre (1,1) logical = true
-    options.Verbose (1,1) logical = true
-end
+if nargin < 2 || isempty(seed), seed = 42; end
+if nargin < 1 || isempty(D), D = prepData("viral_songs.csv", 'Seed', seed); end
+if ~isfolder("models"), mkdir("models"); end
 
-tStart = tic;
-rng(options.Seed);
+X_train = D.Xtrain{:, :};
+Y_train = D.ytrain;
+cv      = D.cv;
 
-if isempty(D)
-    D = prepData("viral_songs.csv", 'Seed', options.Seed, ...
-        'IncludeGenre', options.IncludeGenre, 'Verbose', false);
-end
-if ~isfolder(options.ModelsDir),  mkdir(options.ModelsDir);  end
-if ~isfolder(options.ResultsDir), mkdir(options.ResultsDir); end
-
-Xtrain = D.Xtrain{:,:};
-ytrain = double(D.ytrain);
-cv     = D.cv;
-featNames = string(D.featureNames(:));
+%% 1. Bayesian Optimization with 5-Fold CV on Training Set
+fprintf('--- Bayesian Hyperparameter Optimization (6 Models, 5-Fold CV, Seed = %d) ---\n', seed);
+drawnow;
 
 hpOpts = struct( ...
     'CVPartition',             cv, ...
     'AcquisitionFunctionName', 'expected-improvement-plus', ...
-    'MaxObjectiveEvaluations', options.MaxEvals, ...
+    'MaxObjectiveEvaluations', 10, ...
     'ShowPlots',               false, ...
     'Verbose',                 0);
 
-modelNames = {'LogisticRegression', 'NaiveBayes', 'DecisionTree', ...
-              'RandomForest', 'GradientBoostedTrees', 'NeuralNetwork'};
-families   = {'Linear (Baseline)', 'Probabilistic', 'Tree', ...
-              'Ensemble (Bagging)', 'Ensemble (Boosting)', 'Neural Network'};
-slugs      = {'logistic_regression', 'naive_bayes', 'decision_tree', ...
-              'random_forest', 'gradient_boosted_trees', 'neural_network'};
+modelNames = {'Logistic Regression', 'Naive Bayes', 'Decision Tree', ...
+              'Random Forest', 'Gradient Boosted Trees', 'Neural Network'};
+modelFamilies = {'Linear (Baseline)', 'Probabilistic', 'Tree', ...
+                 'Ensemble (Bagging)', 'Ensemble (Boosting)', 'Neural Network'};
 
-Models = struct();
-cvRows = cell(6, 1);
+tunedMdls = cell(6, 1);
+tuneSec   = zeros(6, 1);
 
-if options.Verbose
-    fprintf('\n=== Training 6 Models (5-Fold CV OptimizeHyperparameters, Seed=%d) ===\n', options.Seed);
-    drawnow;
+% [1/6] Logistic Regression (Baseline - Linear Family)
+rng(seed, 'twister'); t0 = tic;
+tunedMdls{1} = fitclinear(X_train, Y_train, 'Learner', 'logistic', ...
+    'OptimizeHyperparameters', {'Lambda', 'Regularization'}, ...
+    'HyperparameterOptimizationOptions', hpOpts);
+tuneSec(1) = toc(t0);
+fprintf('[1/6] %-24s tuned in %.1fs\n', modelNames{1}, tuneSec(1)); drawnow;
+
+% [2/6] Naive Bayes (Probabilistic Family)
+rng(seed, 'twister'); t0 = tic;
+paramsNB = setSearchSpace(hyperparameters('fitcnb', X_train, Y_train), ...
+    {'DistributionNames', []}, {'Width', [0.30, 1.50]});
+hpOptsNB = hpOpts; hpOptsNB.MaxObjectiveEvaluations = 2;
+tunedMdls{2} = fitcnb(X_train, Y_train, ...
+    'OptimizeHyperparameters', paramsNB, ...
+    'HyperparameterOptimizationOptions', hpOptsNB);
+tuneSec(2) = toc(t0);
+fprintf('[2/6] %-24s tuned in %.1fs\n', modelNames{2}, tuneSec(2)); drawnow;
+
+% [3/6] Decision Tree (Tree Family)
+rng(seed, 'twister'); t0 = tic;
+tunedMdls{3} = fitctree(X_train, Y_train, ...
+    'OptimizeHyperparameters', {'MaxNumSplits', 'MinLeafSize'}, ...
+    'HyperparameterOptimizationOptions', hpOpts);
+tuneSec(3) = toc(t0);
+fprintf('[3/6] %-24s tuned in %.1fs\n', modelNames{3}, tuneSec(3)); drawnow;
+
+% [4/6] Random Forest (Ensemble - Bagging)
+rng(seed, 'twister'); t0 = tic;
+paramsRF = setSearchSpace(hyperparameters('fitcensemble', X_train, Y_train, 'Tree'), ...
+    {'NumLearningCycles', [20, 60]}, {'MinLeafSize', [10, 40]}, {'NumVariablesToSample', [3, 10]});
+tunedMdls{4} = fitcensemble(X_train, Y_train, 'Method', 'Bag', ...
+    'OptimizeHyperparameters', paramsRF, ...
+    'HyperparameterOptimizationOptions', hpOpts);
+tuneSec(4) = toc(t0);
+fprintf('[4/6] %-24s tuned in %.1fs\n', modelNames{4}, tuneSec(4)); drawnow;
+
+% [5/6] Gradient Boosted Trees (Ensemble - Boosting)
+rng(seed, 'twister'); t0 = tic;
+paramsGB = setSearchSpace(hyperparameters('fitcensemble', X_train, Y_train, 'Tree'), ...
+    {'NumLearningCycles', [20, 60]}, {'LearnRate', [0.03, 0.25]}, {'MaxNumSplits', [2, 12]});
+tunedMdls{5} = fitcensemble(X_train, Y_train, 'Method', 'LogitBoost', ...
+    'OptimizeHyperparameters', paramsGB, ...
+    'HyperparameterOptimizationOptions', hpOpts);
+tuneSec(5) = toc(t0);
+fprintf('[5/6] %-24s tuned in %.1fs\n', modelNames{5}, tuneSec(5)); drawnow;
+
+% [6/6] Neural Network (Multilayer Perceptron)
+rng(seed, 'twister'); t0 = tic;
+paramsNN = setSearchSpace(hyperparameters('fitcnet', X_train, Y_train), ...
+    {'Layer_1_Size', [8, 64]}, {'Activations', []}, {'Lambda', [1e-5, 1e-1]});
+tunedMdls{6} = fitcnet(X_train, Y_train, 'Standardize', false, 'IterationLimit', 120, ...
+    'OptimizeHyperparameters', paramsNN, ...
+    'HyperparameterOptimizationOptions', hpOpts);
+tuneSec(6) = toc(t0);
+fprintf('[6/6] %-24s tuned in %.1fs\n\n', modelNames{6}, tuneSec(6)); drawnow;
+
+%% 2. Extract & Log Final Tuned Hyperparameters
+bestLambdaLR = tunedMdls{1}.Lambda;
+bestRegLR    = 'ridge';
+if contains(lower(string(tunedMdls{1}.Regularization)), 'lasso')
+    bestRegLR = 'lasso';
 end
 
-for i = 1:6
-    name = modelNames{i};
-    rng(options.Seed);
-    tMdl = tic;
+bestNB = tunedMdls{2}.HyperparameterOptimizationResults.XAtMinObjective;
+bestDT = tunedMdls{3}.HyperparameterOptimizationResults.XAtMinObjective;
+bestRF = tunedMdls{4}.HyperparameterOptimizationResults.XAtMinObjective;
+bestGB = tunedMdls{5}.HyperparameterOptimizationResults.XAtMinObjective;
+bestNN = tunedMdls{6}.HyperparameterOptimizationResults.XAtMinObjective;
 
-    switch name
-        case 'LogisticRegression'
-            mdl = fitclinear(Xtrain, ytrain, 'Learner', 'logistic', ...
-                'OptimizeHyperparameters', {'Lambda', 'Regularization'}, ...
-                'HyperparameterOptimizationOptions', hpOpts);
+nnLayerSizes = tunedMdls{6}.LayerSizes;
+nnAct        = char(tunedMdls{6}.Activations);
+nnLambda     = bestNN.Lambda;
 
-        case 'NaiveBayes'
-            pNB = hyperparameters('fitcnb', Xtrain, ytrain);
-            for j = 1:numel(pNB)
-                switch pNB(j).Name
-                    case 'DistributionNames', pNB(j).Optimize = true;
-                    case 'Width',             pNB(j).Range = [0.30, 1.50]; pNB(j).Optimize = true;
-                    otherwise,                pNB(j).Optimize = false;
-                end
-            end
-            hpNB = hpOpts;
-            hpNB.MaxObjectiveEvaluations = 2;
-            mdl = fitcnb(Xtrain, ytrain, ...
-                'OptimizeHyperparameters', pNB, ...
-                'HyperparameterOptimizationOptions', hpNB);
-
-        case 'DecisionTree'
-            mdl = fitctree(Xtrain, ytrain, ...
-                'OptimizeHyperparameters', {'MaxNumSplits', 'MinLeafSize'}, ...
-                'HyperparameterOptimizationOptions', hpOpts);
-
-        case 'RandomForest'
-            pRF = hyperparameters('fitcensemble', Xtrain, ytrain, 'Tree');
-            for j = 1:numel(pRF)
-                switch pRF(j).Name
-                    case 'NumLearningCycles',    pRF(j).Range = [20, 60]; pRF(j).Optimize = true;
-                    case 'MinLeafSize',          pRF(j).Range = [10, 40]; pRF(j).Optimize = true;
-                    case 'NumVariablesToSample', pRF(j).Range = [3, min(10, size(Xtrain, 2))]; pRF(j).Optimize = true;
-                    otherwise,                   pRF(j).Optimize = false;
-                end
-            end
-            mdl = fitcensemble(Xtrain, ytrain, 'Method', 'Bag', ...
-                'OptimizeHyperparameters', pRF, ...
-                'HyperparameterOptimizationOptions', hpOpts);
-
-        case 'GradientBoostedTrees'
-            pGB = hyperparameters('fitcensemble', Xtrain, ytrain, 'Tree');
-            for j = 1:numel(pGB)
-                switch pGB(j).Name
-                    case 'NumLearningCycles', pGB(j).Range = [20, 60];     pGB(j).Optimize = true;
-                    case 'LearnRate',         pGB(j).Range = [0.03, 0.25]; pGB(j).Optimize = true;
-                    case 'MaxNumSplits',      pGB(j).Range = [2, 12];      pGB(j).Optimize = true;
-                    otherwise,                pGB(j).Optimize = false;
-                end
-            end
-            mdl = fitcensemble(Xtrain, ytrain, 'Method', 'LogitBoost', ...
-                'OptimizeHyperparameters', pGB, ...
-                'HyperparameterOptimizationOptions', hpOpts);
-
-        case 'NeuralNetwork'
-            pNN = hyperparameters('fitcnet', Xtrain, ytrain);
-            for j = 1:numel(pNN)
-                switch pNN(j).Name
-                    case 'LayerSizes',  pNN(j).Range = [8, 64];      pNN(j).Optimize = true;
-                    case 'Activations', pNN(j).Optimize = true;
-                    case 'Lambda',      pNN(j).Range = [1e-5, 1e-1]; pNN(j).Optimize = true;
-                    otherwise,          pNN(j).Optimize = false;
-                end
-            end
-            mdl = fitcnet(Xtrain, ytrain, 'Standardize', false, 'IterationLimit', 120, ...
-                'OptimizeHyperparameters', pNN, ...
-                'HyperparameterOptimizationOptions', hpOpts);
-    end
-
-    dt = toc(tMdl);
-    Models.(name) = mdl;
-
-    cvMdl = crossval(mdl, 'CVPartition', cv);
-    [oofPred, oofScore] = kfoldPredict(cvMdl);
-    foldAcc = 1 - kfoldLoss(cvMdl, 'Mode', 'individual');
-
-    K = cv.NumTestSets;
-    f1 = zeros(K,1); pr = zeros(K,1); roc = zeros(K,1); prec = zeros(K,1); rec = zeros(K,1);
-    for k = 1:K
-        idx = test(cv, k);
-        yk = ytrain(idx); pk = oofPred(idx); sk = oofScore(idx, 2);
-        C = confusionmat(yk, pk, 'Order', [0, 1]);
-        prec(k) = C(2,2) / max(C(2,2) + C(1,2), 1);
-        rec(k)  = C(2,2) / max(C(2,2) + C(2,1), 1);
-        f1(k)   = (2 * prec(k) * rec(k)) / max(prec(k) + rec(k), eps);
-        [~, ~, ~, roc(k)] = perfcurve(yk, sk, 1);
-        [~, ~, ~, pr(k)]  = perfcurve(yk, sk, 1, 'XCrit', 'reca', 'YCrit', 'prec');
-    end
-
-    if options.Verbose
-        fprintf('[%d/6] %-21s | CV F1: %.4f +/- %.4f | PR-AUC: %.4f | ROC-AUC: %.4f | %.1fs\n', ...
-            i, name, mean(f1), std(f1), mean(pr), mean(roc), dt);
-        drawnow;
-    end
-
-    save(fullfile(options.ModelsDir, slugs{i} + ".mat"), 'mdl', 'name', 'D', 'featNames');
-
-    cvRows{i} = table(string(name), string(families{i}), mean(f1), std(f1), ...
-        mean(pr), std(pr), mean(roc), std(roc), mean(prec), mean(rec), mean(foldAcc), dt, ...
-        'VariableNames', {'Model','Family','CV_F1_Mean','CV_F1_SD','CV_PRAUC_Mean','CV_PRAUC_SD', ...
-                          'CV_ROCAUC_Mean','CV_ROCAUC_SD','CV_Precision','CV_Recall','CV_Accuracy','TrainTimeSec'});
+if string(bestNB.DistributionNames) == "kernel" && isfinite(bestNB.Width)
+    nbSummary = sprintf("DistributionNames='kernel', Width=%.4f", bestNB.Width);
+else
+    nbSummary = "DistributionNames='normal'";
 end
 
-CVSummary = vertcat(cvRows{:});
-writetable(CVSummary, fullfile(options.ResultsDir, 'cv_metrics_summary.csv'));
+tunedParamsSummary = [ ...
+    sprintf("Regularization='%s', Lambda=%.4g", bestRegLR, bestLambdaLR); ...
+    nbSummary; ...
+    sprintf("MaxNumSplits=%d, MinLeafSize=%d", bestDT.MaxNumSplits, bestDT.MinLeafSize); ...
+    sprintf("NumLearningCycles=%d, MinLeafSize=%d, NumVariablesToSample=%d", ...
+            bestRF.NumLearningCycles, bestRF.MinLeafSize, bestRF.NumVariablesToSample); ...
+    sprintf("NumLearningCycles=%d, LearnRate=%.4f, MaxNumSplits=%d", ...
+            bestGB.NumLearningCycles, bestGB.LearnRate, bestGB.MaxNumSplits); ...
+    sprintf("LayerSizes=%s, Activations='%s', Lambda=%.4g", ...
+            mat2str(nnLayerSizes), nnAct, nnLambda)];
 
-bundle = struct('Models', Models, 'PreprocessParams', D.Params, ...
-    'CVSummary', CVSummary, 'FeatureNames', featNames, ...
-    'Seed', options.Seed, 'TotalElapsedSec', toc(tStart));
-save(fullfile(options.ModelsDir, 'trained_models.mat'), '-struct', 'bundle');
-out = bundle;
+HyperparamTable = table( ...
+    string(modelNames(:)), string(modelFamilies(:)), ...
+    tunedParamsSummary, round(tuneSec, 2), ...
+    'VariableNames', {'Model', 'Family', 'FinalTunedHyperparameters', 'TuneTimeSec'});
+
+fprintf('--- Final Tuned Hyperparameters Log ---\n');
+disp(HyperparamTable);
+writetable(HyperparamTable, fullfile("models", "tuned_hyperparameters.csv"));
+
+%% 3. Build Model Specs (cfg.models) & Save Trained Models
+specs = struct('Name', {}, 'Fit', {});
+
+specs(1) = struct('Name', modelNames{1}, 'Fit', ...
+    @(X, y) fitclinear(X, y, 'Learner', 'logistic', ...
+    'Regularization', bestRegLR, 'Lambda', bestLambdaLR));
+
+if string(bestNB.DistributionNames) == "kernel" && isfinite(bestNB.Width)
+    nbWidth = bestNB.Width;
+    specs(2) = struct('Name', modelNames{2}, 'Fit', ...
+        @(X, y) fitcnb(X, y, 'DistributionNames', 'kernel', 'Width', nbWidth));
+else
+    specs(2) = struct('Name', modelNames{2}, 'Fit', ...
+        @(X, y) fitcnb(X, y, 'DistributionNames', 'normal'));
 end
+
+specs(3) = struct('Name', modelNames{3}, 'Fit', ...
+    @(X, y) fitctree(X, y, 'MaxNumSplits', bestDT.MaxNumSplits, ...
+    'MinLeafSize', bestDT.MinLeafSize));
+
+tRF = templateTree('MinLeafSize', bestRF.MinLeafSize, ...
+                   'NumVariablesToSample', bestRF.NumVariablesToSample);
+specs(4) = struct('Name', modelNames{4}, 'Fit', ...
+    @(X, y) fitcensemble(X, y, 'Method', 'Bag', ...
+    'NumLearningCycles', bestRF.NumLearningCycles, 'Learners', tRF));
+
+tGB = templateTree('MaxNumSplits', bestGB.MaxNumSplits);
+specs(5) = struct('Name', modelNames{5}, 'Fit', ...
+    @(X, y) fitcensemble(X, y, 'Method', 'LogitBoost', ...
+    'NumLearningCycles', bestGB.NumLearningCycles, ...
+    'LearnRate', bestGB.LearnRate, 'Learners', tGB));
+
+specs(6) = struct('Name', modelNames{6}, 'Fit', ...
+    @(X, y) fitcnet(X, y, 'Standardize', false, 'IterationLimit', 120, ...
+    'LayerSizes', nnLayerSizes, 'Activations', nnAct, ...
+    'Lambda', nnLambda));
+
+trainedModels = cell(6, 1);
+for m = 1:6
+    rng(seed, 'twister');
+    trainedModels{m} = specs(m).Fit(X_train, Y_train);
+end
+
+prepParams = D.Params;
+save(fullfile("models", "trained_models.mat"), 'trainedModels', 'tunedMdls', ...
+    'HyperparamTable', 'modelNames', 'modelFamilies', 'prepParams');
+fprintf('Saved trained models and hyperparameter log to models/.\n\n');
+
+cfg = struct('dataFile', 'viral_songs.csv', 'outDir', 'results', ...
+             'seed', seed, 'selectMetric', 'F1', 'models', specs);
+end
+
+%% Helper: Enable only selected hyperparameters and apply custom bounds
+function params = setSearchSpace(params, varargin)
+for j = 1:numel(params)
+    params(j).Optimize = false;
+end
+for k = 1:numel(varargin)
+    pName  = varargin{k}{1};
+    pRange = varargin{k}{2};
+    idx = find(strcmp({params.Name}, pName), 1);
+    if ~isempty(idx)
+        params(idx).Optimize = true;
+        if ~isempty(pRange)
+            params(idx).Range = pRange;
+        end
+    end
+end
+end
+% === END OF FILE ===
