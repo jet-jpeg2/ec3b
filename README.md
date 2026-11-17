@@ -1,4 +1,4 @@
-# What Makes a Song Go Viral? — Predicting Spotify Track Virality
+# What Makes a Song Go Viral?
 
 **Course:** LBYEC3B – Intelligent Systems for Engineering (De La Salle University – Manila)  
 **Group Members:** Dotollo, Melanie S. | Meneses, Jet Ryan S. | Vigo, Karol Miel F.  
