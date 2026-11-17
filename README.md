@@ -22,10 +22,10 @@ LBYEC3B_ViralSong_Project/
 ├── trainModels.m                   # Bayesian optimization (5-fold CV), hyperparameter log & model saving
 ├── README.md                       # Environment, workflow & model documentation
 │
-├── prepData.m                      # Leakage-free preprocessing & stratified splitting (untouched)
-├── testPrepData.m                  # 12-point automated preprocessing & leakage verification (untouched)
-├── edaFigures.m                    # Exploratory data analysis figures & data dictionary (untouched)
-├── evalModels.m                    # CV/test evaluation, McNemar's test, importance & error PDFs (untouched)
+├── prepData.m                      # Leakage free preprocessing & stratified splitting
+├── testPrepData.m                  # 12-point automated preprocessing & leakage verification
+├── edaFigures.m                    # Exploratory data analysis figures & data dictionary
+├── evalModels.m                    # CV/test evaluation, McNemar's test, importance & error PDFs
 │
 ├── viral_songs.csv                 # Input dataset (10,000 tracks)
 ├── LBYEC3B_ViralSong_Project.prj   # MATLAB Project file
